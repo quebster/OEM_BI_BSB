@@ -1,0 +1,102 @@
+USE [OEM_BI_BSB]
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Update_OrderDetails]    Script Date: 11/01/2024 14:38:43 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER proc [dbo].[usp_Update_OrderDetails]
+(
+	@d_from as datetime = null,
+	@d_to as datetime = null,
+    @JobName nvarchar(255) = NULL
+)
+AS
+BEGIN
+
+	declare @DynamicQuery NVARCHAR(MAX);
+	BEGIN TRY
+
+	BEGIN TRANSACTION Dwh_Update_Order_Details
+
+		declare @ProcName nvarchar(100) = 'usp_Update_OrderDetails'
+		declare @Lk int = 9999
+		declare @CurrenDbName nvarchar(100) = 'OEM_BI_BSB'
+		declare @SourceDbName nvarchar(100) = 'BSB_PRODUCTION' --+ convert(nvarchar(10),@Lk)
+		declare @ServerNm_Link NVARCHAR(255) = '[SQL-BSB01.comaxmail.com\sqlbsb01]' 
+		
+		-- get server name link
+		--EXEC [master].dbo.sp_comax_getServerNm_Link @Lk, @ServerNm_Link OUTPUT;
+		--select * from [Max2000_BackOffice_BI].dbo.Dwh_LastUpdatesLog
+
+		if @d_from is null
+		begin
+			select 
+				@d_from = isnull(LastUpdateDateTime, getdate())
+			from
+				[Max2000_BackOffice_BI].dbo.Dwh_LastUpdatesLog
+			where 
+				ProcName = @ProcName
+		end
+
+		if @d_from is null
+		begin
+			set @d_from = getdate()
+		end
+
+		if @d_to is null
+		begin
+			set @d_to = dateadd(d,1,getdate())
+		end
+
+		declare @d1 datetime
+		declare @d2 datetime
+
+		set @d1 = cast(@d_from as Date)
+		set @d2 = cast(@d_to as Date)
+			
+		--Users
+		set @DynamicQuery = '
+		delete from Order_Details where OrderId in (select OrderId from Orders where OrderDate between ' + @d1 + ' and ' + @d2 + ')
+		insert into Order_Details(Id,OrderId,ProductId,UnitProce,NumOfUnits,DiscountId,AmountBeforeDiscount,DiscountAmount,AmountBeforeVat,VatAmount,TotalAmountToPay,Remarks)
+		select t1.C,t1.DocC,t1.ItemC,t1.Price,t1.Quantity,0,t1.SumBeforeDiscount,t1.DiscountSum,t1.SumBeforeVat,t1.VatSum,t1.[Sum],t1.Remarks
+		from 
+			' + @ServerNm_Link + '.' + @SourceDbName + '.dbo.DocLines t1, ' + @ServerNm_Link + '.' + @SourceDbName + '.dbo.Doc t2
+        where t1.DocC=t2.C and t2.CompanyC=354 and DateDoc between ' + @d1 + ' and ' + @d2 
+
+		exec sp_executesql @DynamicQuery, N'@d_from DATETIME, @d_to DATETIME, @d1 DATETIME, @d2 DATETIME', @d_from, @d_to, @d1, @d2;
+
+		-- save last update date
+		exec [master].dbo.sp_comax_Dwh_SaveLastUpdateDate @d_from, @d_to, @ProcName, '', @Lk, @CurrenDbName, @JobName
+
+	COMMIT TRANSACTION Dwh_Update_Order_Details
+	PRINT 'Operation Successful.'
+
+END TRY
+BEGIN CATCH 
+
+	IF (@@TRANCOUNT > 0)
+	BEGIN
+		ROLLBACK TRANSACTION Dwh_Update_Order_Details
+		PRINT 'Error detected, all changes reversed'
+		print @DynamicQuery
+	END 
+
+	
+
+	declare @ErrorText nvarchar(max) = ''
+	
+	set @ErrorText = 'Error message: ' + ERROR_MESSAGE() + ' , Error Line: ' + convert(nvarchar(50), ERROR_LINE())
+	
+	-- save last update date
+	exec [master].dbo.sp_comax_Dwh_SaveLastUpdateDate @d_from, @d_to, @ProcName, @ErrorText, @Lk, @CurrenDbName, @JobName
+	
+	BEGIN;
+		THROW 50001, @ErrorText, 1;
+	END;
+END CATCH
+
+END
+
+
